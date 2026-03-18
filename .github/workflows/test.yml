@@ -75,11 +75,13 @@ jobs:
 
       - name: Verify it failed
         run: |
-          if [ "${{ steps.repotoire.outputs.exit-code }}" = "0" ]; then
-            echo "::error::Expected non-zero exit code with fail-on: low"
+          OUTCOME="${{ steps.repotoire.outcome }}"
+          echo "Step outcome: $OUTCOME"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::Expected step outcome 'failure' with fail-on: low, got '$OUTCOME'"
             exit 1
           fi
-          echo "Correctly failed with exit code ${{ steps.repotoire.outputs.exit-code }}"
+          echo "Correctly failed (outcome=$OUTCOME)"
 
   test-version-pin:
     name: Version Pinning
