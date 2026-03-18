@@ -22,6 +22,13 @@ mkdir -p "$OUTPUT_DIR"
 SARIF_FILE="$OUTPUT_DIR/results.sarif.json"
 JSON_FILE="$OUTPUT_DIR/results.json"
 
+# Determine output file based on format
+if [ "$FORMAT" = "json" ]; then
+  OUTPUT_FILE="$JSON_FILE"
+else
+  OUTPUT_FILE="$SARIF_FILE"
+fi
+
 # Build command
 CMD_ARGS=()
 
@@ -39,13 +46,13 @@ if [ "$DIFF_ONLY" = "true" ] && [ -n "${GITHUB_EVENT_PATH:-}" ]; then
   if [ -n "$BASE_SHA" ]; then
     echo "Running diff analysis against base: $BASE_SHA"
     CMD_ARGS+=(diff "$BASE_SHA" --path "$REPO_PATH")
-    CMD_ARGS+=(--format "$FORMAT" --output "$SARIF_FILE")
+    CMD_ARGS+=(--format "$FORMAT" --output "$OUTPUT_FILE")
   else
     echo "::warning::Could not determine base SHA for diff. Falling back to full analysis."
-    CMD_ARGS+=(analyze "$REPO_PATH" --format "$FORMAT" --output "$SARIF_FILE")
+    CMD_ARGS+=(analyze "$REPO_PATH" --format "$FORMAT" --output "$OUTPUT_FILE")
   fi
 else
-  CMD_ARGS+=(analyze "$REPO_PATH" --format "$FORMAT" --output "$SARIF_FILE")
+  CMD_ARGS+=(analyze "$REPO_PATH" --format "$FORMAT" --output "$OUTPUT_FILE")
 fi
 
 # Add fail-on if specified
@@ -63,22 +70,33 @@ if [ "$FORMAT" = "sarif" ] || [ "$FORMAT" = "json" ]; then
   CMD_ARGS+=(--per-page 0)
 fi
 
+# Try --json-sidecar if available (v0.3.114+), fall back to second run
+HAS_SIDECAR=false
+if repotoire analyze --help 2>&1 | grep -q "json-sidecar"; then
+  HAS_SIDECAR=true
+  if [ "$FORMAT" != "json" ]; then
+    CMD_ARGS+=(--json-sidecar "$JSON_FILE")
+  fi
+fi
+
 # Add extra args (word-split intentionally)
 if [ -n "$EXTRA_ARGS" ]; then
   # shellcheck disable=SC2206
   CMD_ARGS+=($EXTRA_ARGS)
 fi
 
-# Use --json-sidecar to produce JSON alongside the primary format in a single
-# analysis run. This avoids running analysis twice when format is sarif/text/etc.
-CMD_ARGS+=(--json-sidecar "$JSON_FILE")
-
 echo "::group::Repotoire Analysis"
 echo "Command: repotoire ${CMD_ARGS[*]}"
 
-# Run analysis once — produces both the primary format output and a JSON sidecar
+# Run primary analysis
 EXIT_CODE=0
 repotoire "${CMD_ARGS[@]}" || EXIT_CODE=$?
+
+# If no sidecar support and format isn't json, run a second pass for JSON outputs
+if [ "$HAS_SIDECAR" = "false" ] && [ "$FORMAT" != "json" ]; then
+  echo "Running secondary JSON pass for outputs..."
+  repotoire analyze "$REPO_PATH" --format json --output "$JSON_FILE" --per-page 0 2>/dev/null || true
+fi
 
 echo "::endgroup::"
 

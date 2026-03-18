@@ -71,6 +71,7 @@ runs:
       run: ${{ github.action_path }}/scripts/install.sh
       env:
         INPUT_VERSION: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ github.token }}
 
     - name: Run Analysis
       id: analyze

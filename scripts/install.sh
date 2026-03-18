@@ -25,8 +25,14 @@ esac
 # Resolve 'latest' to actual version tag
 if [ "$VERSION" = "latest" ]; then
   echo "::group::Resolving latest version"
+  # Use GITHUB_TOKEN if available to avoid API rate limits
+  AUTH_HEADER=""
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    AUTH_HEADER="-H Authorization: token $GITHUB_TOKEN"
+  fi
   VERSION=$(curl -sfL \
     -H "Accept: application/vnd.github+json" \
+    ${AUTH_HEADER} \
     https://api.github.com/repos/Zach-hammad/repotoire/releases/latest \
     | jq -r .tag_name)
   if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
