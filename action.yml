@@ -1,0 +1,91 @@
+name: 'Repotoire Code Analysis'
+description: 'Graph-powered code health analysis. 107 detectors, 9 languages, one binary.'
+author: 'Zach-hammad'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  version:
+    description: 'Repotoire version to install (e.g., "v0.3.113" or "latest")'
+    required: false
+    default: 'latest'
+  path:
+    description: 'Path to the repository/directory to analyze'
+    required: false
+    default: '.'
+  format:
+    description: 'Output format: sarif, json, text, markdown'
+    required: false
+    default: 'sarif'
+  fail-on:
+    description: 'Fail if any finding meets this severity: critical, high, medium, low. Empty = do not fail.'
+    required: false
+    default: ''
+  diff-only:
+    description: 'Only analyze diff vs base. "auto" = diff on PRs, full on push.'
+    required: false
+    default: 'auto'
+  config:
+    description: 'Path to repotoire.toml config file. Empty = auto-detect.'
+    required: false
+    default: ''
+  args:
+    description: 'Additional CLI arguments passed to repotoire analyze'
+    required: false
+    default: ''
+
+outputs:
+  score:
+    description: 'Overall health score (0-100)'
+    value: ${{ steps.parse-outputs.outputs.score }}
+  grade:
+    description: 'Letter grade (A+ through F)'
+    value: ${{ steps.parse-outputs.outputs.grade }}
+  findings-count:
+    description: 'Total number of findings'
+    value: ${{ steps.parse-outputs.outputs.findings-count }}
+  critical-count:
+    description: 'Critical severity findings'
+    value: ${{ steps.parse-outputs.outputs.critical-count }}
+  high-count:
+    description: 'High severity findings'
+    value: ${{ steps.parse-outputs.outputs.high-count }}
+  sarif-file:
+    description: 'Path to the SARIF output file'
+    value: ${{ steps.analyze.outputs.sarif-file }}
+  json-file:
+    description: 'Path to the JSON output file'
+    value: ${{ steps.analyze.outputs.json-file }}
+  exit-code:
+    description: 'Repotoire exit code (0 = pass, 1 = fail-on triggered)'
+    value: ${{ steps.analyze.outputs.exit-code }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Repotoire
+      id: install
+      shell: bash
+      run: ${{ github.action_path }}/scripts/install.sh
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+
+    - name: Run Analysis
+      id: analyze
+      shell: bash
+      run: ${{ github.action_path }}/scripts/analyze.sh
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_DIFF_ONLY: ${{ inputs.diff-only }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_ARGS: ${{ inputs.args }}
+
+    - name: Parse Outputs
+      id: parse-outputs
+      shell: bash
+      run: ${{ github.action_path }}/scripts/outputs.sh
+      if: always()

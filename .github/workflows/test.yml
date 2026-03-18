@@ -1,0 +1,107 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-basic:
+    name: Basic Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Create a sample file to analyze
+      - name: Create test fixture
+        run: |
+          mkdir -p test-repo
+          cat > test-repo/app.py << 'PYEOF'
+          import os
+          def run_command(user_input):
+              os.system(user_input)
+              eval(user_input)
+          PYEOF
+          # Strip leading whitespace from heredoc (YAML indentation)
+          sed -i 's/^          //' test-repo/app.py
+
+      - name: Run Repotoire Action
+        id: repotoire
+        uses: ./
+        with:
+          path: test-repo
+          format: sarif
+
+      - name: Verify outputs
+        run: |
+          echo "Score: ${{ steps.repotoire.outputs.score }}"
+          echo "Grade: ${{ steps.repotoire.outputs.grade }}"
+          echo "Findings: ${{ steps.repotoire.outputs.findings-count }}"
+          echo "SARIF: ${{ steps.repotoire.outputs.sarif-file }}"
+
+          # Score should be a number
+          [[ "${{ steps.repotoire.outputs.score }}" =~ ^[0-9]+\.?[0-9]*$ ]] || { echo "::error::Score is not a number"; exit 1; }
+
+          # SARIF file should exist
+          [ -f "${{ steps.repotoire.outputs.sarif-file }}" ] || { echo "::error::SARIF file not found"; exit 1; }
+
+  test-fail-on:
+    name: Fail-On Threshold
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create vulnerable file
+        run: |
+          mkdir -p test-repo
+          cat > test-repo/vuln.py << 'PYEOF'
+          import os
+          def handler(request):
+              os.system(request.data)
+          PYEOF
+          sed -i 's/^          //' test-repo/vuln.py
+
+      - name: Run with fail-on (expect failure)
+        id: repotoire
+        uses: ./
+        with:
+          path: test-repo
+          fail-on: low
+        continue-on-error: true
+
+      - name: Verify it failed
+        run: |
+          if [ "${{ steps.repotoire.outputs.exit-code }}" = "0" ]; then
+            echo "::error::Expected non-zero exit code with fail-on: low"
+            exit 1
+          fi
+          echo "Correctly failed with exit code ${{ steps.repotoire.outputs.exit-code }}"
+
+  test-version-pin:
+    name: Version Pinning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install specific version
+        uses: ./
+        with:
+          version: 'v0.3.113'
+          path: '.'
+
+  test-macos:
+    name: macOS Compatibility
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run on macOS
+        uses: ./
+        with:
+          path: '.'
