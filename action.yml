@@ -35,6 +35,10 @@ inputs:
     description: 'Additional CLI arguments passed to repotoire analyze'
     required: false
     default: ''
+  comment:
+    description: 'Post analysis summary as a PR comment (pull_request events only)'
+    required: false
+    default: 'true'
 
 outputs:
   score:
@@ -90,3 +94,13 @@ runs:
       shell: bash
       run: ${{ github.action_path }}/scripts/outputs.sh
       if: always()
+
+    - name: PR Comment
+      id: comment
+      shell: bash
+      run: ${{ github.action_path }}/scripts/comment.sh
+      if: always()
+      env:
+        INPUT_COMMENT: ${{ inputs.comment }}
+        GH_TOKEN: ${{ github.token }}
+        INPUT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
