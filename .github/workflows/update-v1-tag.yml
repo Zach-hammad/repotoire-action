@@ -1,0 +1,21 @@
+name: Update v1 Tag
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update floating v1 tag
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          MAJOR=$(echo "$TAG" | grep -oP '^v\d+')
+          echo "Moving ${MAJOR} tag to ${TAG}"
+          git tag -f "$MAJOR" "$TAG"
+          git push -f origin "$MAJOR"
