@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  repository_dispatch:
+    types: [new-release]
 
 jobs:
   test-basic:
@@ -94,6 +96,7 @@ jobs:
 
   test-version-pin:
     name: Version Pinning
+    if: github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,8 +104,14 @@ jobs:
       - name: Install specific version
         uses: ./
         with:
-          version: 'v0.3.113'
+          version: ${{ github.event.client_payload.version }}
           path: '.'
+
+      - name: Verify installed version
+        run: |
+          INSTALLED=$(repotoire version 2>&1 | head -1)
+          echo "Installed: $INSTALLED"
+          echo "Expected: ${{ github.event.client_payload.version }}"
 
   test-macos:
     name: macOS Compatibility
