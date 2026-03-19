@@ -82,11 +82,8 @@ jobs:
         with:
           sarif_file: ${{ steps.repotoire.outputs.sarif-file }}
 
-      - name: Comment score on PR
-        if: always()
-        run: |
-          echo "Health Score: ${{ steps.repotoire.outputs.score }} (${{ steps.repotoire.outputs.grade }})"
-          echo "Findings: ${{ steps.repotoire.outputs.findings-count }}"
+      # PR comment is posted automatically (comment: 'true' by default)
+      # Set comment: 'false' to disable
 ```
 
 ## Inputs
@@ -100,6 +97,7 @@ jobs:
 | `diff-only` | Only analyze diff vs base. `auto` = diff on PRs, full on push. | `auto` |
 | `config` | Path to `repotoire.toml` config file. Empty = auto-detect. | `''` |
 | `args` | Additional CLI arguments passed to `repotoire analyze` | `''` |
+| `comment` | Post analysis summary as a PR comment | `'true'` |
 
 ## Outputs
 
@@ -141,15 +139,18 @@ If you see a warning about shallow clones, add `fetch-depth: 0` to your checkout
 
 Without full git history, Repotoire cannot perform churn analysis, blame-based detection, or co-change analysis. The action will still work, but git-dependent detectors will be skipped.
 
-### Permissions for SARIF upload
+### Permissions
 
-To upload SARIF results to GitHub Code Scanning, your workflow needs the `security-events: write` permission:
+For full functionality, your workflow needs:
 
 ```yaml
 permissions:
-  security-events: write
+  security-events: write   # SARIF upload to Code Scanning
+  pull-requests: write      # PR comment with analysis summary
   contents: read
 ```
+
+Without `pull-requests: write`, the PR comment step will warn but not fail. Without `security-events: write`, SARIF upload will fail.
 
 ### Version pinning
 
