@@ -125,3 +125,27 @@ jobs:
         uses: ./
         with:
           path: '.'
+
+  test-comment-disabled:
+    name: Comment Disabled
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create test fixture
+        run: |
+          mkdir -p test-repo
+          cat > test-repo/app.py << 'PYEOF'
+          import os
+          def run_command(user_input):
+              os.system(user_input)
+          PYEOF
+          sed -i 's/^          //' test-repo/app.py
+
+      - name: Run with comment disabled
+        uses: ./
+        with:
+          path: test-repo
+          comment: 'false'
