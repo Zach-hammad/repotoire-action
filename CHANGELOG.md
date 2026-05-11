@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Zach-hammad/repotoire-action/compare/v1.1.0...v1.1.1) (2026-05-11)
+
+
+### Bug Fixes
+
+* **diff:** repotoire diff takes [PATH] positionally; handle diff-JSON shape ([#3](https://github.com/Zach-hammad/repotoire-action/issues/3)) ([d5eb1cf](https://github.com/Zach-hammad/repotoire-action/commit/d5eb1cffbe28f9b0cdaa20aacbede34d4ca62aa7))
+
 ## [1.1.0](https://github.com/Zach-hammad/repotoire-action/compare/v1.0.0...v1.1.0) (2026-03-19)
 
 
