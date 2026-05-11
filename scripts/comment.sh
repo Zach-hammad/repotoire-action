@@ -19,20 +19,27 @@ if [ -z "$PR_NUMBER" ]; then
   exit 0
 fi
 
-# --- Read results ---
+# --- Read results (handle both analyze-JSON and diff-JSON shapes) ---
 JSON_FILE="${RUNNER_TEMP:-/tmp}/repotoire-results/results.json"
 if [ ! -f "$JSON_FILE" ]; then
   echo "::warning::No JSON results file — skipping PR comment"
   exit 0
 fi
 
-SCORE=$(jq -r '.overall_score // 0' "$JSON_FILE")
-GRADE=$(jq -r '.grade // "?"' "$JSON_FILE")
-TOTAL=$(jq -r '.findings | length' "$JSON_FILE")
-CRITICAL=$(jq -r '[.findings[] | select(.severity == "critical")] | length' "$JSON_FILE")
-HIGH=$(jq -r '[.findings[] | select(.severity == "high")] | length' "$JSON_FILE")
-
-SCORE=$(printf "%.1f" "$SCORE")
+# analyze JSON: { overall_score, grade, findings: [{severity, title, affected_files, line_start}] }
+# diff JSON:    { score_after, total_new_findings, new_findings: [{severity, title, description, file, line, attribution}] }  (no grade)
+_JQ_OUT=$(jq -r '
+  (if has("new_findings") then .new_findings else (.findings // []) end) as $f
+  | [ (.overall_score // .score_after // 0),
+      (.grade // "-"),
+      ($f | length),
+      ([$f[] | select((.severity // "" | ascii_downcase) == "critical")] | length),
+      ([$f[] | select((.severity // "" | ascii_downcase) == "high")] | length),
+      (if has("new_findings") then "diff" else "full" end) ]
+  | @tsv' "$JSON_FILE" 2>/dev/null || true)
+[ -n "$_JQ_OUT" ] || _JQ_OUT=$'0\t-\t0\t0\t0\tfull'
+IFS=$'\t' read -r SCORE GRADE TOTAL CRITICAL HIGH IS_DIFF <<< "$_JQ_OUT"
+SCORE=$(printf "%.1f" "$SCORE" 2>/dev/null || echo "$SCORE")
 
 # --- Build file link base ---
 HEAD_SHA="${INPUT_HEAD_SHA:-${GITHUB_SHA:-HEAD}}"
@@ -40,17 +47,18 @@ LINK_BASE="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/blob/${
 
 # --- Extract top 5 findings ---
 FINDINGS_TABLE=$(jq -r --arg base "$LINK_BASE" '
-  def sev_order: {"critical":0,"high":1,"medium":2,"low":3,"info":4}[.] // 5;
-  def escape_md: gsub("\\|"; "\\|") | gsub("`"; "");
-  def clean_path: ltrimstr("./");
-  [.findings[]
-    | {
-        severity,
-        title: (.title | escape_md),
-        file: ((.affected_files[0] // null) | if . then clean_path else null end),
-        line: .line_start
-      }
-  ]
+  def sev_order: {"critical":0,"high":1,"medium":2,"low":3,"info":4}[. | ascii_downcase] // 5;
+  def escape_md: tostring | gsub("\\|"; "\\|") | gsub("`"; "") | gsub("\n"; " ");
+  def clean_path: tostring | ltrimstr("./");
+  (if has("new_findings") then .new_findings else (.findings // []) end)
+  | [ .[]
+      | {
+          severity: (.severity // "?"),
+          title: ((.title // .description // "") | escape_md),
+          file: (((.file // (.affected_files? // [null] | .[0])) // null) | if . then clean_path else null end),
+          line: (.line // .line_start)
+        }
+    ]
   | sort_by(.severity | sev_order)
   | .[0:5]
   | .[]
@@ -67,22 +75,35 @@ FINDINGS_TABLE=$(jq -r --arg base "$LINK_BASE" '
 
 # --- Build comment body ---
 BODY_FILE=$(mktemp)
+if [ "$IS_DIFF" = "diff" ]; then
+  FINDINGS_SUMMARY="Top new findings"
+  HEADER="| Score | New findings | Critical | High |"
+  SEP="|-------|--------------|----------|------|"
+  ROW="| ${SCORE} | ${TOTAL} | ${CRITICAL} | ${HIGH} |"
+  EMPTY_MSG="No new findings introduced by this PR's changes."
+else
+  FINDINGS_SUMMARY="Top findings"
+  HEADER="| Score | Grade | Findings | Critical | High |"
+  SEP="|-------|-------|----------|----------|------|"
+  ROW="| ${SCORE} | ${GRADE} | ${TOTAL} | ${CRITICAL} | ${HIGH} |"
+  EMPTY_MSG="No findings detected."
+fi
 
 cat > "$BODY_FILE" << MDEOF
 <!-- repotoire-comment -->
 ### Repotoire Analysis
 
-| Score | Grade | Findings | Critical | High |
-|-------|-------|----------|----------|------|
-| ${SCORE} | ${GRADE} | ${TOTAL} | ${CRITICAL} | ${HIGH} |
+${HEADER}
+${SEP}
+${ROW}
 MDEOF
 
 if [ "$TOTAL" -gt 0 ] && [ -n "$FINDINGS_TABLE" ]; then
-  DISPLAY_COUNT=$(echo "$FINDINGS_TABLE" | wc -l)
+  DISPLAY_COUNT=$(echo "$FINDINGS_TABLE" | wc -l | tr -d ' ')
   cat >> "$BODY_FILE" << MDEOF
 
 <details>
-<summary>Top findings (${DISPLAY_COUNT})</summary>
+<summary>${FINDINGS_SUMMARY} (${DISPLAY_COUNT})</summary>
 
 | Severity | File | Finding |
 |----------|------|---------|
@@ -91,8 +112,7 @@ ${FINDINGS_TABLE}
 </details>
 MDEOF
 elif [ "$TOTAL" -eq 0 ]; then
-  echo "" >> "$BODY_FILE"
-  echo "No findings detected." >> "$BODY_FILE"
+  printf '\n%s\n' "$EMPTY_MSG" >> "$BODY_FILE"
 fi
 
 # --- Find existing comment ---
@@ -100,6 +120,7 @@ COMMENT_ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
   --paginate \
   --jq '.[] | select(.body | contains("<!-- repotoire-comment -->")) | .id' \
   2>/dev/null | head -1 || true)
+case "$COMMENT_ID" in ''|*[!0-9]*) COMMENT_ID="" ;; esac  # only a numeric comment id; ignore error bodies
 
 # --- Create or update ---
 if [ -n "$COMMENT_ID" ]; then
