@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 REPO_PATH="${INPUT_PATH:-.}"
 FORMAT="${INPUT_FORMAT:-sarif}"
@@ -49,51 +49,73 @@ if [ "$DIFF_ONLY" = "true" ] && [ -n "${GITHUB_EVENT_PATH:-}" ]; then
   if [ -n "$BASE_SHA" ]; then
     MODE="diff"
   else
-    echo "::warning::Could not determine the PR base SHA — falling back to full analysis."
+    echo "::warning::Could not determine the PR base SHA — falling back to a full analysis."
   fi
 fi
 
-# `repotoire diff` takes [PATH] positionally and accepts neither --per-page nor --json-sidecar
-# (those are `analyze`-only). Build the command per-mode accordingly.
-PRIMARY_ARGS=()
-if [ "$MODE" = "diff" ]; then
-  PRIMARY_ARGS=(diff "$BASE_SHA" "$REPO_PATH" --format "$FORMAT" --output "$PRIMARY_FILE")
-else
-  PRIMARY_ARGS=(analyze "$REPO_PATH" --format "$FORMAT" --output "$PRIMARY_FILE" --per-page 0)
-fi
-[ -n "$FAIL_ON" ] && PRIMARY_ARGS+=(--fail-on "$FAIL_ON")
+# Whether the installed repotoire supports `analyze --json-sidecar` (avoids a 2nd pass).
+HAS_SIDECAR=false
+if repotoire analyze --help 2>&1 | grep -q "json-sidecar"; then HAS_SIDECAR=true; fi
 
-# Get a JSON sidecar alongside non-JSON output (analyze only; diff has no --json-sidecar).
-USE_SIDECAR=false
-if [ "$MODE" = "analyze" ] && [ "$FORMAT" != "json" ] && repotoire analyze --help 2>&1 | grep -q "json-sidecar"; then
-  USE_SIDECAR=true
-  PRIMARY_ARGS+=(--json-sidecar "$JSON_FILE")
-fi
+# run_repotoire <mode> <format> <output-file> <apply-fail-on:1|0>
+#   diff:    `repotoire diff <base> <path> --format … --output … [--fail-on …]`   (path is positional;
+#            diff accepts NEITHER --per-page NOR --json-sidecar — those are analyze-only)
+#   analyze: `repotoire analyze <path> --format … --output … --per-page 0 [--json-sidecar JSON_FILE] [--fail-on …]`
+# Sets REPO_OUT to the combined stdout+stderr; returns repotoire's exit code.
+run_repotoire() {
+  local mode="$1" fmt="$2" out="$3" applyfo="$4"
+  local args=()
+  if [ "$mode" = "diff" ]; then
+    args=(diff "$BASE_SHA" "$REPO_PATH" --format "$fmt" --output "$out")
+  else
+    args=(analyze "$REPO_PATH" --format "$fmt" --output "$out" --per-page 0)
+    if [ "$HAS_SIDECAR" = "true" ] && [ "$fmt" != "json" ] && [ "$out" != "$JSON_FILE" ]; then
+      args+=(--json-sidecar "$JSON_FILE")
+    fi
+  fi
+  if [ "$applyfo" = "1" ] && [ -n "$FAIL_ON" ]; then args+=(--fail-on "$FAIL_ON"); fi
+  if [ -n "$EXTRA_ARGS" ]; then
+    # shellcheck disable=SC2206
+    args+=($EXTRA_ARGS)
+  fi
+  echo "Command: repotoire ${args[*]}"
+  local rc=0
+  REPO_OUT="$(repotoire "${args[@]}" 2>&1)" || rc=$?
+  [ -n "$REPO_OUT" ] && printf '%s\n' "$REPO_OUT"
+  return $rc
+}
 
-# Extra args (documented as "passed to repotoire analyze"; word-split intentionally)
-if [ -n "$EXTRA_ARGS" ]; then
-  # shellcheck disable=SC2206
-  PRIMARY_ARGS+=($EXTRA_ARGS)
-fi
+is_fail_on_failure() {  # $1 = repotoire output
+  [ -n "$FAIL_ON" ] && printf '%s' "$1" | grep -q "Failing due to --fail-on"
+}
 
 echo "::group::Repotoire Analysis"
 echo "Mode: $MODE${BASE_SHA:+ (base $BASE_SHA)}"
-echo "Command: repotoire ${PRIMARY_ARGS[*]}"
 
+REPO_OUT=""
 EXIT_CODE=0
-repotoire "${PRIMARY_ARGS[@]}" || EXIT_CODE=$?
+run_repotoire "$MODE" "$FORMAT" "$PRIMARY_FILE" 1 || EXIT_CODE=$?
+PRIMARY_OUT="$REPO_OUT"
+
+FELL_BACK=false
+if [ "$EXIT_CODE" -ne 0 ] && [ "$MODE" = "diff" ] && ! is_fail_on_failure "$PRIMARY_OUT"; then
+  # diff mode failed for a non-fail-on reason (path isn't a git repo, base unresolvable, …) —
+  # degrade to a full `repotoire analyze` (the gate is NOT applied to the fallback).
+  echo "::warning::repotoire diff mode failed (exit $EXIT_CODE) — falling back to a full \`repotoire analyze\` of '$REPO_PATH'. The --fail-on gate is not applied to this fallback run."
+  MODE="analyze"
+  EXIT_CODE=0
+  run_repotoire analyze "$FORMAT" "$PRIMARY_FILE" 0 || EXIT_CODE=$?
+  PRIMARY_OUT="$REPO_OUT"
+  FELL_BACK=true
+fi
 
 # Ensure a JSON results file exists for the outputs/comment steps.
 if [ ! -f "$JSON_FILE" ]; then
   if [ "$FORMAT" = "json" ] && [ -f "$PRIMARY_FILE" ] && [ "$PRIMARY_FILE" != "$JSON_FILE" ]; then
     cp "$PRIMARY_FILE" "$JSON_FILE" 2>/dev/null || true
-  elif [ "$USE_SIDECAR" = "false" ]; then
+  else
     echo "Producing JSON results (secondary pass)..."
-    if [ "$MODE" = "diff" ]; then
-      repotoire diff "$BASE_SHA" "$REPO_PATH" --format json --output "$JSON_FILE" >/dev/null 2>&1 || true
-    else
-      repotoire analyze "$REPO_PATH" --format json --output "$JSON_FILE" --per-page 0 >/dev/null 2>&1 || true
-    fi
+    run_repotoire "$MODE" json "$JSON_FILE" 0 >/dev/null 2>&1 || true
   fi
 fi
 
@@ -103,11 +125,11 @@ echo "sarif-file=$SARIF_FILE" >> "$GITHUB_OUTPUT"
 echo "json-file=$JSON_FILE" >> "$GITHUB_OUTPUT"
 echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
 
-# Exit semantics: 0 = pass; 1 = --fail-on threshold triggered (intended failure);
-# >=2 = repotoire CLI error (bad args, panic, etc.) — surface clearly, do NOT call it a findings failure.
+# Exit semantics: 0 = pass; 1+ with the fail-on tell-tale = --fail-on threshold triggered (intended
+# failure); other nonzero = repotoire CLI error — surface clearly, NOT as a findings failure.
 if [ "$EXIT_CODE" -eq 0 ]; then
-  echo "Repotoire analysis passed."
-elif [ "$EXIT_CODE" -eq 1 ] && [ -n "$FAIL_ON" ]; then
+  if [ "$FELL_BACK" = "true" ]; then echo "Repotoire full-mode fallback completed."; else echo "Repotoire analysis passed."; fi
+elif is_fail_on_failure "$PRIMARY_OUT"; then
   echo "::error::Repotoire: new findings at or above '$FAIL_ON' severity."
   exit 1
 else
