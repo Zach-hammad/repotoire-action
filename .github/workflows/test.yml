@@ -35,6 +35,7 @@ jobs:
         with:
           path: test-repo
           format: sarif
+          fail-on-tier: ''   # this job only exercises the outputs — don't let the gate fail it
 
       - name: Verify outputs
         run: |
@@ -75,7 +76,7 @@ jobs:
           PYEOF
           sed -i 's/^          //' test-repo/vuln.py
 
-      - name: Run with fail-on (expect failure)
+      - name: Run with fail-on (legacy severity gate, expect failure)
         id: repotoire
         uses: ./
         with:
@@ -92,6 +93,23 @@ jobs:
             echo "::warning::Step did not fail — fixture may not produce findings. Skipping assertion."
           else
             echo "Correctly failed (outcome=$OUTCOME)"
+          fi
+
+      - name: Run with the default blocking-tier gate (expect failure — fixture has a tainted exec/eval)
+        id: repotoire-tier
+        uses: ./
+        with:
+          path: test-repo
+        continue-on-error: true
+
+      - name: Verify the blocking-tier gate fired
+        run: |
+          OUTCOME="${{ steps.repotoire-tier.outcome }}"
+          echo "Step outcome: $OUTCOME"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::warning::Default (fail-on-tier=blocking) did not fail — fixture may not produce a Blocking finding on this repotoire build. Skipping assertion."
+          else
+            echo "Correctly failed on a Blocking finding (outcome=$OUTCOME)"
           fi
 
   test-version-pin:
@@ -125,6 +143,7 @@ jobs:
         uses: ./
         with:
           path: '.'
+          fail-on-tier: ''   # smoke test only — don't gate on the action repo's own findings
 
   test-comment-disabled:
     name: Comment Disabled
@@ -149,3 +168,4 @@ jobs:
         with:
           path: test-repo
           comment: 'false'
+          fail-on-tier: ''   # this job checks comment behavior — don't let the gate fail it

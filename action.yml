@@ -1,5 +1,5 @@
 name: 'Repotoire Code Analysis'
-description: 'Graph-powered code health analysis. 107 detectors, 9 languages, one binary.'
+description: 'The branch-relative code-health gate for CI — fails the build only on what the change introduced (tainted flows, committed credentials, security config-facts). 110 detectors, 9 languages.'
 author: 'Zach-hammad'
 
 branding:
@@ -8,7 +8,7 @@ branding:
 
 inputs:
   version:
-    description: 'Repotoire version to install (e.g., "v0.3.113" or "latest")'
+    description: 'Repotoire version to install (e.g., "v0.9.0" or "latest"). The default gate (fail-on-tier) requires repotoire >= 0.9.0.'
     required: false
     default: 'latest'
   path:
@@ -19,8 +19,12 @@ inputs:
     description: 'Output format: sarif, json, text, markdown'
     required: false
     default: 'sarif'
+  fail-on-tier:
+    description: 'Fail the build if a new finding at this tier or higher lands in the change: blocking, advisory, deep. Default "blocking" = the 0.9.0 gate (tainted-flow-to-dangerous-sink, committed credentials, security config-facts). Set to empty to never fail.'
+    required: false
+    default: 'blocking'
   fail-on:
-    description: 'Fail if any finding meets this severity: critical, high, medium, low. Empty = do not fail.'
+    description: '[DEPRECATED — use fail-on-tier] Severity-based gate: fail if any finding meets this severity (critical, high, medium, low). When non-empty it overrides fail-on-tier (legacy v1 behavior). Empty = use fail-on-tier.'
     required: false
     default: ''
   diff-only:
@@ -63,7 +67,7 @@ outputs:
     description: 'Path to the JSON output file'
     value: ${{ steps.analyze.outputs.json-file }}
   exit-code:
-    description: 'Repotoire exit code (0 = pass, 1 = fail-on triggered)'
+    description: 'Repotoire exit code (0 = pass, 1 = the fail-on-tier / fail-on gate triggered)'
     value: ${{ steps.analyze.outputs.exit-code }}
 
 runs:
@@ -84,6 +88,7 @@ runs:
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_FAIL_ON_TIER: ${{ inputs.fail-on-tier }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_DIFF_ONLY: ${{ inputs.diff-only }}
         INPUT_CONFIG: ${{ inputs.config }}

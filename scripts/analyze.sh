@@ -3,10 +3,31 @@ set -uo pipefail
 
 REPO_PATH="${INPUT_PATH:-.}"
 FORMAT="${INPUT_FORMAT:-sarif}"
+FAIL_ON_TIER="${INPUT_FAIL_ON_TIER:-blocking}"
 FAIL_ON="${INPUT_FAIL_ON:-}"
 DIFF_ONLY="${INPUT_DIFF_ONLY:-auto}"
 CONFIG="${INPUT_CONFIG:-}"
 EXTRA_ARGS="${INPUT_ARGS:-}"
+
+# Resolve the gate. `fail-on` (deprecated, severity-based) takes precedence over `fail-on-tier`
+# when set; otherwise the 0.9.0 blocking-tier gate (`--fail-on-tier`) is used. If the installed
+# repotoire predates `--fail-on-tier` (< 0.9.0) we degrade to `--fail-on high` with a warning.
+GATE_ARGS=()
+GATE_LABEL=""
+if [ -n "$FAIL_ON" ]; then
+  echo "::warning::The 'fail-on' input is deprecated — use 'fail-on-tier' (blocking|advisory|deep). Running the legacy severity gate (--fail-on=$FAIL_ON)."
+  GATE_ARGS=(--fail-on "$FAIL_ON")
+  GATE_LABEL="severity '$FAIL_ON'"
+elif [ -n "$FAIL_ON_TIER" ]; then
+  if repotoire diff --help 2>&1 | grep -q -- '--fail-on-tier'; then
+    GATE_ARGS=(--fail-on-tier "$FAIL_ON_TIER")
+    GATE_LABEL="tier '$FAIL_ON_TIER'"
+  else
+    echo "::warning::The installed repotoire ($(repotoire --version 2>/dev/null || echo unknown)) predates --fail-on-tier (needs >= 0.9.0). Falling back to --fail-on high — pin 'version: latest' or '>= v0.9.0' to use the blocking-tier gate."
+    GATE_ARGS=(--fail-on high)
+    GATE_LABEL="severity 'high' (fallback — repotoire < 0.9.0)"
+  fi
+fi
 
 # Warn if shallow clone
 if [ -d "$REPO_PATH/.git" ]; then
@@ -57,13 +78,13 @@ fi
 HAS_SIDECAR=false
 if repotoire analyze --help 2>&1 | grep -q "json-sidecar"; then HAS_SIDECAR=true; fi
 
-# run_repotoire <mode> <format> <output-file> <apply-fail-on:1|0>
-#   diff:    `repotoire diff <base> <path> --format … --output … [--fail-on …]`   (path is positional;
+# run_repotoire <mode> <format> <output-file> <apply-gate:1|0>
+#   diff:    `repotoire diff <base> <path> --format … --output … [<gate args>]`   (path is positional;
 #            diff accepts NEITHER --per-page NOR --json-sidecar — those are analyze-only)
-#   analyze: `repotoire analyze <path> --format … --output … --per-page 0 [--json-sidecar JSON_FILE] [--fail-on …]`
+#   analyze: `repotoire analyze <path> --format … --output … --per-page 0 [--json-sidecar JSON_FILE] [<gate args>]`
 # Sets REPO_OUT to the combined stdout+stderr; returns repotoire's exit code.
 run_repotoire() {
-  local mode="$1" fmt="$2" out="$3" applyfo="$4"
+  local mode="$1" fmt="$2" out="$3" applygate="$4"
   local args=()
   if [ "$mode" = "diff" ]; then
     args=(diff "$BASE_SHA" "$REPO_PATH" --format "$fmt" --output "$out")
@@ -73,7 +94,7 @@ run_repotoire() {
       args+=(--json-sidecar "$JSON_FILE")
     fi
   fi
-  if [ "$applyfo" = "1" ] && [ -n "$FAIL_ON" ]; then args+=(--fail-on "$FAIL_ON"); fi
+  if [ "$applygate" = "1" ] && [ "${#GATE_ARGS[@]}" -gt 0 ]; then args+=("${GATE_ARGS[@]}"); fi
   if [ -n "$EXTRA_ARGS" ]; then
     # shellcheck disable=SC2206
     args+=($EXTRA_ARGS)
@@ -85,8 +106,8 @@ run_repotoire() {
   return $rc
 }
 
-is_fail_on_failure() {  # $1 = repotoire output
-  [ -n "$FAIL_ON" ] && printf '%s' "$1" | grep -q "Failing due to --fail-on"
+is_gate_failure() {  # $1 = repotoire output. Both --fail-on= and --fail-on-tier= print "Failing due to --fail-on…".
+  [ "${#GATE_ARGS[@]}" -gt 0 ] && printf '%s' "$1" | grep -q "Failing due to --fail-on"
 }
 
 echo "::group::Repotoire Analysis"
@@ -98,10 +119,10 @@ run_repotoire "$MODE" "$FORMAT" "$PRIMARY_FILE" 1 || EXIT_CODE=$?
 PRIMARY_OUT="$REPO_OUT"
 
 FELL_BACK=false
-if [ "$EXIT_CODE" -ne 0 ] && [ "$MODE" = "diff" ] && ! is_fail_on_failure "$PRIMARY_OUT"; then
-  # diff mode failed for a non-fail-on reason (path isn't a git repo, base unresolvable, …) —
+if [ "$EXIT_CODE" -ne 0 ] && [ "$MODE" = "diff" ] && ! is_gate_failure "$PRIMARY_OUT"; then
+  # diff mode failed for a non-gate reason (path isn't a git repo, base unresolvable, …) —
   # degrade to a full `repotoire analyze` (the gate is NOT applied to the fallback).
-  echo "::warning::repotoire diff mode failed (exit $EXIT_CODE) — falling back to a full \`repotoire analyze\` of '$REPO_PATH'. The --fail-on gate is not applied to this fallback run."
+  echo "::warning::repotoire diff mode failed (exit $EXIT_CODE) — falling back to a full \`repotoire analyze\` of '$REPO_PATH'. The gate is not applied to this fallback run."
   MODE="analyze"
   EXIT_CODE=0
   run_repotoire analyze "$FORMAT" "$PRIMARY_FILE" 0 || EXIT_CODE=$?
@@ -125,12 +146,12 @@ echo "sarif-file=$SARIF_FILE" >> "$GITHUB_OUTPUT"
 echo "json-file=$JSON_FILE" >> "$GITHUB_OUTPUT"
 echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
 
-# Exit semantics: 0 = pass; 1+ with the fail-on tell-tale = --fail-on threshold triggered (intended
-# failure); other nonzero = repotoire CLI error — surface clearly, NOT as a findings failure.
+# Exit semantics: 0 = pass; 1+ with the "Failing due to --fail-on…" tell-tale = the gate triggered
+# (intended failure); other nonzero = repotoire CLI error — surface clearly, NOT as a findings failure.
 if [ "$EXIT_CODE" -eq 0 ]; then
-  if [ "$FELL_BACK" = "true" ]; then echo "Repotoire full-mode fallback completed."; else echo "Repotoire analysis passed."; fi
-elif is_fail_on_failure "$PRIMARY_OUT"; then
-  echo "::error::Repotoire: new findings at or above '$FAIL_ON' severity."
+  if [ "$FELL_BACK" = "true" ]; then echo "Repotoire full-mode fallback completed."; else echo "Repotoire: nothing in this change trips the gate."; fi
+elif is_gate_failure "$PRIMARY_OUT"; then
+  echo "::error::Repotoire: this change trips the gate (${GATE_LABEL}). See the analysis output above; fix the finding, or — if it's an accepted risk — suppress with \`// repotoire:ignore[<detector>] — <reason>\`."
   exit 1
 else
   echo "::error::Repotoire CLI failed (exit code $EXIT_CODE) — see the analysis output above. This is a tool/usage error, not a findings failure."
