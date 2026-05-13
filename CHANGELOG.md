@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/Zach-hammad/repotoire-action/compare/v1.1.1...v2.0.0) (2026-05-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* the action now fails the build by default when a Blocking-tier finding lands in the change (previously it never failed unless `fail-on` was set). Set `fail-on-tier: ''` to restore the non-failing default, or `fail-on: high` for the legacy severity gate. The default gate requires `repotoire >= 0.9.0`.
+
+### Features
+
+* default to the 0.9.0 blocking-tier gate (--fail-on-tier blocking) ([#5](https://github.com/Zach-hammad/repotoire-action/issues/5)) ([2da5e9b](https://github.com/Zach-hammad/repotoire-action/commit/2da5e9b8a73ff50a01fa2be395b4f28f575514e5))
+
 ## [1.1.1](https://github.com/Zach-hammad/repotoire-action/compare/v1.1.0...v1.1.1) (2026-05-11)
 
 
