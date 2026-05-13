@@ -1,4 +1,4 @@
-name: Update v1 Tag
+name: Update Major Tag
 
 on:
   release:
@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Update floating v1 tag
+      - name: Move the floating major tag (v1, v2, …) to this release
         run: |
           TAG="${{ github.event.release.tag_name }}"
           MAJOR=$(echo "$TAG" | grep -oP '^v\d+')
